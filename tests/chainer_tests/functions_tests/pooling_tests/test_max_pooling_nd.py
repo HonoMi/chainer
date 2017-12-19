@@ -130,12 +130,13 @@ class TestMaxPoolingND(unittest.TestCase):
         self.check_forward_consistency_regression(cuda.to_gpu(self.x), 'never')
 
     def check_backward(self, x_data, y_grad, use_cudnn='always'):
+        def f(x):
+            return functions.max_pooling_nd(
+                x, self.ksize, stride=self.stride, pad=self.pad,
+                cover_all=self.cover_all)
         with chainer.using_config('use_cudnn', use_cudnn):
             gradient_check.check_backward(
-                functions.MaxPoolingND(
-                    self.ndim, self.ksize, stride=self.stride, pad=self.pad,
-                    cover_all=self.cover_all),
-                x_data, y_grad, dtype='d', **self.check_backward_options)
+                f, x_data, y_grad, dtype='d', **self.check_backward_options)
 
     @condition.retry(3)
     def test_backward_cpu(self):
@@ -175,7 +176,7 @@ class TestMaxPoolingND(unittest.TestCase):
         with chainer.using_config('use_cudnn', use_cudnn):
             func_nd = functions.MaxPoolingND(self.ndim, ksize, stride=stride,
                                              pad=pad, cover_all=self.cover_all)
-        y_nd = func_nd(x_nd)
+        y_nd = func_nd.apply((x_nd,))[0]
         y_nd.grad = gy_data
         y_nd.backward()
 
@@ -211,9 +212,9 @@ class TestMaxPoolingND(unittest.TestCase):
         func = functions.MaxPoolingND(
             self.ndim, self.ksize, stride=self.stride, pad=self.pad,
             cover_all=self.cover_all)
-        func(self.x)
-        func.backward_cpu((self.x,), (self.gy,))
-        func.backward_cpu((self.x,), (self.gy,))
+        func.apply((self.x,))
+        func.backward((self.x,), (self.gy,))
+        func.backward((self.x,), (self.gy,))
 
 
 @testing.parameterize(*testing.product({
