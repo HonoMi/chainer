@@ -43,11 +43,20 @@ class TestMaxPoolingND(unittest.TestCase):
                          self.dims, self.ksize, self.stride, self.pad))
         gy_shape = (2, 3) + outs
         self.gy = numpy.random.uniform(-1, 1, gy_shape).astype(self.dtype)
+        self.ggx = numpy.random.uniform(
+            -1, 1, x_shape).astype(self.dtype)
 
         self.check_backward_options = {}
         if self.dtype == numpy.float16:
             self.check_backward_options = {
-                'atol': 1e-03, 'rtol': 1e-03}
+                'atol': 1e-3, 'rtol': 1e-2}
+            self.check_double_backward_options = {
+                'atol': 1e-3, 'rtol': 1e-2}
+        else:
+            self.check_backward_options = {
+                'atol': 1e-4, 'rtol': 1e-3}
+            self.check_double_backward_options = {
+                'atol': 1e-4, 'rtol': 1e-3}
 
     def check_forward(self, x_data, use_cudnn='always'):
         dims = self.dims
@@ -215,6 +224,42 @@ class TestMaxPoolingND(unittest.TestCase):
         func.apply((self.x,))
         func.backward((self.x,), (self.gy,))
         func.backward((self.x,), (self.gy,))
+
+    def check_double_backward(self, x_data, y_grad, x_grad_grad,
+                              use_cudnn='always'):
+        def f(x):
+            y = functions.max_pooling_nd(
+                x, self.ksize, stride=self.stride, pad=self.pad,
+                cover_all=self.cover_all)
+            return y * y
+        with chainer.using_config('use_cudnn', use_cudnn):
+            gradient_check.check_double_backward(
+                f, x_data, y_grad, x_grad_grad,
+                dtype='d',
+                **self.check_double_backward_options)
+
+    def test_double_backward_cpu(self):
+        self.check_double_backward(self.x, self.gy, self.ggx, 'never')
+
+    """
+    @attr.gpu
+    def test_double_backward_gpu(self):
+        self.check_double_backward(
+            cuda.to_gpu(self.x), cuda.to_gpu(self.gy), cuda.to_gpu(self.ggx))
+
+    @attr.gpu
+    def test_double_backward_gpu_non_contiguous(self):
+        self.check_double_backward(
+            cuda.cupy.asfortranarray(cuda.to_gpu(self.x)),
+            cuda.cupy.asfortranarray(cuda.to_gpu(self.gy)),
+            cuda.cupy.asfortranarray(cuda.to_gpu(self.ggx)))
+
+    @attr.gpu
+    def test_double_backward_gpu_no_cudnn(self):
+        self.check_double_backward(
+            cuda.to_gpu(self.x), cuda.to_gpu(self.gy), cuda.to_gpu(self.ggx),
+            'never')
+    """
 
 
 @testing.parameterize(*testing.product({

@@ -171,12 +171,17 @@ class MaxPoolingNDWithIndexes(function_node.FunctionNode):
         ksize = col.shape[2:mid]
         outs = col.shape[mid:]
         # (n, c, k_1 * k_2 * ... * k_N, out_1, out_2, ..., out_N)
-        col_shape = (n, c) + (functools.reduce(mul, ksize),) + outs
+        ksize_total = functools.reduce(mul, ksize)
+        col_shape = (n, c) + (ksize_total,) + outs
         col = col.reshape(col_shape)
+        # (n, c, out_1, ..., out_N, k_1 * .. * k_N)
+        col_indexes = (0, 1) + tuple(six.moves.range(3, 3 + self.ndim)) + (2,)
+        col = col.transpose(col_indexes)
+        col = col.reshape(-1, ksize_total)
 
         indexes = self.indexes.ravel()
         col = col[numpy.arange(len(indexes)), indexes]
-        return col.reshape((n, c) + col.shape[mid:])
+        return col.reshape((n, c) + outs),
 
     def forward_gpu(self, inputs):
         if self._used_cudnn:
