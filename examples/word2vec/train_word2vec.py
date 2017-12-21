@@ -242,7 +242,7 @@ def main():
     val_iter = WindowIterator(val, args.window, args.batchsize, repeat=False)
 
     # Set up an updater
-    updater = training.updaters.StandardUpdater(
+    updater = training.updater.StandardUpdater(
         train_iter, optimizer, converter=convert, device=args.gpu)
 
     # Set up a trainer
