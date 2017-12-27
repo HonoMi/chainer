@@ -7,8 +7,9 @@ import argparse
 import collections
 
 import numpy as np
-import six
 import sys
+import re
+import copy
 
 import chainer
 from chainer import cuda
@@ -78,15 +79,52 @@ class SoftmaxCrossEntropyLoss(chainer.Chain):
         return F.softmax_cross_entropy(self.out(x), t)
 
 
+# class WindowIteratorIterator(chainer.dataset.Iterator):
+# 
+#     def __init__(self, dataset_generator, window, batch_size, repeat=True):
+#         self.dataset_generator = dataset_generator
+#         self.window = window  # size of context window
+#         self.batch_size = batch_size
+#         self._repeat = repeat
+#         self.epoch = 0
+#         self.is_new_epoch = False
+#         self.current_position = 0
+#         if not self._repeat and self.epoch > 0:
+#             raise StopIteration
+# 
+#     def __next__(self):
+#         """This iterator returns a list representing a mini-batch.
+# 
+#         Each item indicates a different position in the original sequence.
+#         """
+#         if not self._repeat and self.epoch > 0:
+#             raise StopIteration
+#         for dataset in self.dataset_generator:
+#             window_iterator = WindowIterator(dataset, self.window, self.batch_size, repeat=False)
+#             for center, contexts in window_iterator:
+#                 print(center.shape, contexts.shape)
+#                 print('hogeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+#                 yield center, contexts
+#         self.epoch += 1
+#         self.is_new_epoch = True
+# 
+#     @property
+#     def epoch_detail(self):
+#         # return self.epoch + float(self.current_position) / len(self.order)
+#         return self.epoch
+
+
 class WindowIteratorIterator(chainer.dataset.Iterator):
 
-    def __init__(self, dataset_generator, window, batch_size, repeat=True):
-        self.dataset_generator = dataset_generator
+    def __init__(self, wid_generator, window, batch_size, repeat=True):
+        self.wid_generator = wid_generator
         self.window = window  # size of context window
         self.batch_size = batch_size
         self._repeat = repeat
         self.epoch = 0
         self.is_new_epoch = False
+        self.current_position = 0
+        self._my_iterator = self.__my_generator()
         if not self._repeat and self.epoch > 0:
             raise StopIteration
 
@@ -97,12 +135,35 @@ class WindowIteratorIterator(chainer.dataset.Iterator):
         """
         if not self._repeat and self.epoch > 0:
             raise StopIteration
-        for dataset in self.dataset_generator:
-            window_iterator = WindowIterator(dataset, self.window, self.batch_size, repeat=False)
-            for center, contexts in window_iterator:
-                return center, contexts
+        try:
+            return self._my_iterator.__next__()
+        except Exception as e:
+            self._my_iterator = self.__my_generator()
         self.epoch += 1
         self.is_new_epoch = True
+        return self._my_iterator.__next__()
+
+    def __my_generator(self):
+        def batch():
+            i = 0
+            batch = []
+            batch_pre = []
+            for i, wid in enumerate(self.wid_generator()):
+                batch.append(wid)
+                if i % self.batch_size + 1 == 0:
+                    batch_pre = copy.deepcopy(batch)
+                    batch = []
+                    yield batch_pre
+        for wid_batch in batch():
+            window_iterator = WindowIterator(wid_batch, self.window, self.batch_size, repeat=False)()
+            for center, contexts in window_iterator:
+                yield center, contexts
+
+    @property
+    def epoch_detail(self):
+        # return self.epoch + float(self.current_position) / len(self.order)
+        return self.epoch
+
 
 
 class WindowIterator(chainer.dataset.Iterator):
@@ -171,6 +232,7 @@ class WindowIterator(chainer.dataset.Iterator):
 
 
 def convert(batch, device):
+    print('== convert')
     center, contexts = batch
     if device >= 0:
         center = cuda.to_gpu(center)
@@ -204,6 +266,7 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--test', dest='test', action='store_true')
     parser.add_argument('--wakati_corpus_list')
+    parser.add_argument('--num_tokens', type=int, default=None, help='If not set, we count words as the 1st-pash.')
     parser.add_argument('--word_count_threshold', default=5, type=int)
     parser.set_defaults(test=False)
     args = parser.parse_args()
@@ -224,42 +287,53 @@ def main():
     if args.gpu >= 0:
         cuda.get_device_from_id(args.gpu).use()
 
-    wakati_corpus_list = [line.rstrip() for line in open(args.wakati_corpus_list, 'r').readlines()]
+    wakati_corpus_list = [line.rstrip() for line in open(args.wakati_corpus_list, 'r').readlines() if not re.match('^\s*#', line)]
 
     # Create vocab.
     vocab = word2vec_module.create_vocab(wakati_corpus_list, count_threshold=args.word_count_threshold)
-    index2word = {wid: word for word, wid in six.iteritems(vocab)}
+    index2word = dict([(wid, word) for (word, wid) in vocab.items()])
 
     # Load the dataset
-    words_iterator = word2vec_module.WordsIterator(wakati_corpus_list, batch_size=1000)
+    words_generator = word2vec_module.WordsGenerator(wakati_corpus_list, batch_size=1000)
 
-    class WidIterator:
+    class WidsGenerator:
     
-        def __init__(self, words_iterator, vocab):
-            self.words_iterator = words_iterator
+        def __init__(self, words_generator, vocab):
+            self.words_generator = words_generator
             self.vocab = vocab
 
         def __call__(self):
-            for words in self.words_iterator:
+            for words in self.words_generator():
                 wids = [vocab[word] if word in vocab else 0 for word in words]
                 yield wids
-    wid_iterator = WidIterator(words_iterator, vocab)
+
+    class WidGenerator:
+ 
+        def __init__(self, wids_generator):
+            self.wids_generator = wids_generator
+
+        def __call__(self):
+            for wids in self.wids_generator():
+                for wid in wids:
+                    yield wid
+
+    wids_generator = WidsGenerator(words_generator, vocab)   # Generator call returns iterator object.
+    wid_generator = WidGenerator(wids_generator)
     # train, val, _ = chainer.datasets.get_ptb_words()
-    num_tokens = len(wid_iterator)
-    train = itertools.islice(wid_iterator, min(int(num_tokens*0.05), 10000), sys.maxsize)
-    val = itertools.islice(wid_iterator, 0, min(int(num_tokens*0.05), 10000))
-    counts = collections.Counter(train)
-    counts.update(collections.Counter(val))
+    num_tokens = len([wid for wid in wid_generator()]) if args.num_tokens is None else args.num_tokens
+    train = itertools.islice(wid_generator(), min(int(num_tokens*0.05), 10000), sys.maxsize)
+    val = itertools.islice(wid_generator(), 0, min(int(num_tokens*0.05), 10000))
+    counts = collections.Counter(wid_generator())
+    # counts.update(collections.Counter(WidGenerator(val)()))
     # n_vocab = max(train) + 1
     n_vocab = len(vocab)
 
-    if args.test:
-        train = train[:100]
-        val = val[:100]
-
+    # if args.test:
+    #     train = train[:100]
+    #     val = val[:100]
 
     print('n_vocab: %d' % n_vocab)
-    print('data length: %d' % len(train))
+    # print('data length: %d' % len(train))
 
     if args.out_type == 'hsm':
         HSM = L.BinaryHierarchicalSoftmax
@@ -291,6 +365,8 @@ def main():
     optimizer.setup(model)
 
     # Set up an iterator
+    train = itertools.islice(wids_generator(), min(int(num_tokens*0.05), 10000), sys.maxsize)
+    val = itertools.islice(wids_generator(), 0, min(int(num_tokens*0.05), 10000))
     train_iter = WindowIteratorIterator(train, args.window, args.batchsize)
     val_iter = WindowIteratorIterator(val, args.window, args.batchsize, repeat=False)
     # train_iter = WindowIterator(train, args.window, args.batchsize)
